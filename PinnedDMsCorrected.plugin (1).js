@@ -1,33 +1,29 @@
 
 /**
  * @name PinnedDMs
- * @author YourName
+ * @author MBlen01
  * @version 1.0.0
  * @description A plugin to pin DMs and add custom notifications/ringtones.
- * @source https://github.com/YourGitHubRepoLink
- * @updateUrl https://raw.githubusercontent.com/YourUpdateLink/PinnedDMs.plugin.js
+ * @source https://github.com/MBlen01/BDPlugins
+ * @updateUrl https://github.com/MBlen01/BDPlugins/PinnedDMs.plugin.js
  */
 
 module.exports = class PinnedDMs {
     constructor() {
-        // Load data for pinned DMs and custom ringtones
         this.pinnedDMs = BdApi.loadData('PinnedDMs', 'pinnedDMs') || [];
         this.customRingtones = BdApi.loadData('PinnedDMs', 'customRingtones') || {};
+        this.lastMessageTimestamps = {};
     }
 
     start() {
-        // Add Pinned DMs UI to Discord
         this.addPinnedDMsUI();
-
-        // Listen for new messages from pinned DMs
         this.listenForMessages();
-
-        // Show success notification
+        this.listenForPresenceUpdates();
+        this.listenForTyping();
         BdApi.showToast("PinnedDMs Plugin Started", { type: "success" });
     }
 
     stop() {
-        // Remove the pinned DMs UI when the plugin is stopped
         const pinnedContainer = document.querySelector("#pinned-dms-list");
         if (pinnedContainer) {
             pinnedContainer.remove();
@@ -35,9 +31,7 @@ module.exports = class PinnedDMs {
         BdApi.showToast("PinnedDMs Plugin Stopped", { type: "error" });
     }
 
-    // Add the pinned DMs section to the Discord UI
     addPinnedDMsUI() {
-        // Create a container for the pinned DMs
         const container = document.createElement("div");
         container.id = "pinned-dms-list";
         container.style.position = "absolute";
@@ -46,48 +40,138 @@ module.exports = class PinnedDMs {
         container.style.padding = "10px";
         container.style.backgroundColor = "#2C2F33";
         container.style.borderRadius = "5px";
-        container.style.zIndex = "9999"; // Ensures it stays on top
+        container.style.zIndex = "9999";
+        container.style.maxHeight = "400px";
+        container.style.overflowY = "auto";
 
-        // Add a title for the section
         const title = document.createElement("h3");
         title.textContent = "Pinned DMs";
         title.style.color = "#fff";
         container.appendChild(title);
 
-        // Display each pinned DM (currently just using placeholder IDs)
         this.pinnedDMs.forEach((dmId) => {
             const dmElement = document.createElement("div");
             dmElement.style.color = "#fff";
             dmElement.textContent = `DM: ${dmId}`; // Placeholder for DM username
+            dmElement.id = `dm-${dmId}`;
+            dmElement.draggable = true;  // Make the DM element draggable
+
+            // Add drag-and-drop event listeners
+            dmElement.addEventListener('dragstart', (e) => this.handleDragStart(e, dmId));
+            dmElement.addEventListener('dragover', (e) => this.handleDragOver(e));
+            dmElement.addEventListener('drop', (e) => this.handleDrop(e, dmId));
+
             container.appendChild(dmElement);
         });
 
-        // Append the container to the body
         document.body.appendChild(container);
     }
 
-    // Listen for new messages from pinned DMs
+    // Handle drag start
+    handleDragStart(e, dmId) {
+        e.dataTransfer.setData('text/plain', dmId);
+        e.dataTransfer.effectAllowed = 'move';
+    }
+
+    // Handle drag over
+    handleDragOver(e) {
+        e.preventDefault(); // Prevent default to allow drop
+        e.dataTransfer.dropEffect = 'move'; // Show the move cursor
+    }
+
+    // Handle drop event
+    handleDrop(e, targetId) {
+        e.preventDefault();
+        const draggedId = e.dataTransfer.getData('text/plain');
+
+        // Reorder the pinned DMs
+        const draggedIndex = this.pinnedDMs.indexOf(draggedId);
+        const targetIndex = this.pinnedDMs.indexOf(targetId);
+
+        if (draggedIndex > -1 && targetIndex > -1) {
+            // Remove dragged item and insert it at the new position
+            this.pinnedDMs.splice(draggedIndex, 1);
+            this.pinnedDMs.splice(targetIndex, 0, draggedId);
+
+            // Update the UI
+            this.updatePinnedDMsUI();
+            BdApi.saveData('PinnedDMs', 'pinnedDMs', this.pinnedDMs); // Save updated order
+        }
+    }
+
+    // Update the UI after reordering
+    updatePinnedDMsUI() {
+        const container = document.querySelector("#pinned-dms-list");
+        while (container.firstChild) {
+            container.removeChild(container.firstChild);
+        }
+        this.addPinnedDMsUI();
+    }
+
     listenForMessages() {
         const Dispatcher = BdApi.findModuleByProps("dispatch", "subscribe");
-
         Dispatcher.subscribe("MESSAGE_CREATE", (event) => {
             const message = event.message;
-
-            // If the message is from a pinned DM, play the custom ringtone
             if (this.pinnedDMs.includes(message.channel_id)) {
                 this.playCustomRingtone(message.author.id);
+                this.updateLastMessageTime(message.author.id, message.timestamp);
             }
         });
     }
 
-    // Play the custom ringtone for a user (or default if none set)
+    listenForPresenceUpdates() {
+        const Dispatcher = BdApi.findModuleByProps("dispatch", "subscribe");
+        Dispatcher.subscribe("PRESENCE_UPDATE", (event) => {
+            const presence = event.presence;
+            const userId = presence.userId;
+            if (this.pinnedDMs.includes(userId)) {
+                this.updateUserStatus(userId, presence.status);
+            }
+        });
+    }
+
+    listenForTyping() {
+        const Dispatcher = BdApi.findModuleByProps("dispatch", "subscribe");
+        Dispatcher.subscribe("TYPING_START", (event) => {
+            const { userId, channelId } = event;
+            if (this.pinnedDMs.includes(channelId)) {
+                this.showTypingIndicator(userId);
+            }
+        });
+    }
+
     playCustomRingtone(userId) {
         const ringtoneUrl = this.customRingtones[userId] || "default-ringtone.mp3";
         let audio = new Audio(ringtoneUrl);
         audio.play();
     }
 
-    // Add custom ringtone settings to the plugin settings UI (optional, can extend later)
+    updateLastMessageTime(userId, timestamp) {
+        const currentTime = Date.now();
+        const lastMessageTime = new Date(timestamp).getTime();
+        const daysAgo = Math.floor((currentTime - lastMessageTime) / (1000 * 60 * 60 * 24));
+        this.lastMessageTimestamps[userId] = daysAgo;
+
+        const dmElement = document.querySelector(`#dm-${userId}`);
+        if (dmElement) {
+            dmElement.textContent = `DM: ${userId} (Last message: ${daysAgo} days ago)`;
+        }
+    }
+
+    updateUserStatus(userId, status) {
+        const dmElement = document.querySelector(`#dm-${userId}`);
+        if (dmElement) {
+            dmElement.textContent = `DM: ${userId} (Status: ${status})`;
+        }
+    }
+
+    showTypingIndicator(userId) {
+        const dmElement = document.querySelector(`#dm-${userId}`);
+        if (dmElement) {
+            dmElement.textContent = `DM: ${userId} (Typing...)`;
+        }
+    }
+
     getSettingsPanel() {
         const panel = document.createElement("div");
         panel.innerHTML = `
